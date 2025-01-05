@@ -1,11 +1,17 @@
 import mido
 import json
 import os
+from multiprocessing import Pool, cpu_count
+from functools import partial
 
 def midi_to_toio_notes(midi_file_path):
     # MIDIファイルの読み込み
-    midi_file = mido.MidiFile(midi_file_path)
-    print(f"Loaded MIDI file: {midi_file_path}")
+    try:
+        midi_file = mido.MidiFile(midi_file_path)
+        print(f"Loaded MIDI file: {midi_file_path}")
+    except Exception as e:
+        print(f"Failed to load MIDI file: {midi_file_path}, Error: {e}")
+        return
 
     # テンポの取得（デフォルトのテンポを設定）
     tempo = 500000  # デフォルトのテンポ（500,000マイクロ秒/拍 = 120BPM）
@@ -22,9 +28,9 @@ def midi_to_toio_notes(midi_file_path):
 
     # 時間の変換用の係数
     tick_time = tempo / ticks_per_beat  # 1tickあたりの時間（マイクロ秒）
-    print(f"Tempo: {tempo} microseconds per beat")
-    print(f"Ticks per beat: {ticks_per_beat}")
-    print(f"Tick time: {tick_time} microseconds per tick")
+    # print(f"Tempo: {tempo} microseconds per beat")
+    # print(f"Ticks per beat: {ticks_per_beat}")
+    # print(f"Tick time: {tick_time} microseconds per tick")
 
     # 全トラックのデータを格納するリスト
     tracks_data = []
@@ -35,7 +41,7 @@ def midi_to_toio_notes(midi_file_path):
         current_time = 0  # 累積時間（ticks）
         note_on_events = {}
 
-        print(f"Processing Track {i}: {track.name}")
+        # print(f"Processing Track {i}: {track.name}")
 
         track_notes = []
 
@@ -49,7 +55,7 @@ def midi_to_toio_notes(midi_file_path):
                 # 曲中でテンポが変更された場合に対応
                 tempo = msg.tempo
                 tick_time = tempo / ticks_per_beat  # 1tickあたりの時間（マイクロ秒）
-                print(f"Tempo change detected at {current_time} ticks: {tempo} microseconds per beat")
+                # print(f"Tempo change detected at {current_time} ticks: {tempo} microseconds per beat")
                 continue
 
             if msg.type == 'note_on' and msg.velocity > 0:
@@ -89,7 +95,8 @@ def midi_to_toio_notes(midi_file_path):
                     }
                     track_notes.append(note_info)
 
-                    print(f"{track_name}, Note {original_note_number} ({start_time_ms:.2f} ms): Duration {duration_ms:.2f} ms, Adjusted Note {note_number}, Play Time Units {play_time_units}")
+                    # デバッグ用の出力をコメントアウトまたは削除可能
+                    # print(f"{track_name}, Note {original_note_number} ({start_time_ms:.2f} ms): Duration {duration_ms:.2f} ms, Adjusted Note {note_number}, Play Time Units {play_time_units}")
 
         if track_notes:
             # トラック情報を保存
@@ -101,6 +108,10 @@ def midi_to_toio_notes(midi_file_path):
             tracks_data.append(track_data)
             priority_counter += 1  # 音符情報があるトラックに対してのみ優先度を増加
 
+    if not tracks_data:
+        print(f"No note data found in MIDI file: {midi_file_path}")
+        return
+
     # 各トラックの音符を開始時間でソート
     for track_data in tracks_data:
         track_data['notes'].sort(key=lambda x: x['start_time_ms'])
@@ -108,20 +119,49 @@ def midi_to_toio_notes(midi_file_path):
     # MIDIファイル名からJSONファイル名を生成
     midi_filename = os.path.basename(midi_file_path)
     midi_name, _ = os.path.splitext(midi_filename)
-    output_json_path = f'{midi_name}_processed.json'
+    output_json_filename = f'{midi_name}_processed.json'
+    output_json_path = os.path.join(os.path.dirname(midi_file_path), output_json_filename)
 
     # データをJSONファイルに保存
-    with open(output_json_path, 'w') as f:
-        json.dump(tracks_data, f, indent=2)
-        print(f"Notes have been saved to {output_json_path}")
+    try:
+        with open(output_json_path, 'w') as f:
+            json.dump(tracks_data, f, indent=2)
+            print(f"Notes have been saved to {output_json_path}")
+    except Exception as e:
+        print(f"Failed to save JSON file: {output_json_path}, Error: {e}")
+
+def collect_midi_files(root_dir):
+    midi_files = []
+    for dirpath, dirnames, filenames in os.walk(root_dir):
+        for filename in filenames:
+            if filename.lower().endswith(('.mid', '.midi')):
+                midi_file_path = os.path.join(dirpath, filename)
+                midi_files.append(midi_file_path)
+    return midi_files
+
+def process_all_midis(root_dir):
+    midi_files = collect_midi_files(root_dir)
+    total_files = len(midi_files)
+    print(f"Total MIDI files to process: {total_files}")
+
+    cpu_cores = cpu_count()
+    print(f"Using {cpu_cores} CPU cores for parallel processing")
+
+    with Pool(processes=cpu_cores) as pool:
+        pool.map(midi_to_toio_notes, midi_files)
 
 if __name__ == '__main__':
     import sys
 
-    midi_file_path = 'path/to/your/midi_file.mid'  # 解析するMIDIファイルのパスを指定
+    # dataディレクトリのパスを指定
+    data_dir = 'data'  # スクリプトの実行ディレクトリに対する相対パス
 
-    # コマンドライン引数でMIDIファイルを指定可能
+    # コマンドライン引数でデータディレクトリを指定可能
     if len(sys.argv) > 1:
-        midi_file_path = sys.argv[1]
+        data_dir = sys.argv[1]
 
-    midi_to_toio_notes(midi_file_path)
+    if not os.path.exists(data_dir):
+        print(f"The specified directory does not exist: {data_dir}")
+        sys.exit(1)
+
+    process_all_midis(data_dir)
